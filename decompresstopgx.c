@@ -58,6 +58,8 @@ int main(int argc, char **argv)
   long jpegSize = 0;
   JSAMPROW *outbuf[MAX_COMPONENTS];
   JSAMPLE *plane[MAX_COMPONENTS];
+  J12SAMPROW *outbuf12[MAX_COMPONENTS];
+  J12SAMPLE *plane12[MAX_COMPONENTS];
   char filename[256];
   FILE *pgxheader = NULL, *pgxfiles[MAX_COMPONENTS] = { NULL };
 
@@ -111,13 +113,27 @@ int main(int argc, char **argv)
 
     pw[i] = compptr->width_in_blocks * DCTSIZE;
     ph[i] = compptr->height_in_blocks * DCTSIZE;
-    if ((plane[i] = (JSAMPLE *)malloc(sizeof(JSAMPLE) * pw[i] *
-                                      ph[i])) == NULL)
-      THROW(strerror(errno));
-    if ((outbuf[i] = (JSAMPROW *)malloc(sizeof(JSAMPROW) * ph[i])) == NULL)
-      THROW(strerror(errno));
-    for (row = 0; row < ph[i]; row++)
-      outbuf[i][row] = &plane[i][row * pw[i]];
+    if (dinfo.data_precision == 12) {
+      if ((plane12[i] = (J12SAMPLE *)malloc(sizeof(J12SAMPLE) * pw[i] *
+                                            ph[i])) == NULL)
+        THROW(strerror(errno));
+      if ((outbuf12[i] = (J12SAMPROW *)malloc(sizeof(J12SAMPROW) *
+                                              ph[i])) == NULL)
+        THROW(strerror(errno));
+    } else if (dinfo.data_precision == 8) {
+      if ((plane[i] = (JSAMPLE *)malloc(sizeof(JSAMPLE) * pw[i] *
+                                        ph[i])) == NULL)
+        THROW(strerror(errno));
+      if ((outbuf[i] = (JSAMPROW *)malloc(sizeof(JSAMPROW) * ph[i])) == NULL)
+        THROW(strerror(errno));
+    } else
+      THROW("Unsupported data precision");
+    for (row = 0; row < ph[i]; row++) {
+      if (dinfo.data_precision == 12)
+        outbuf12[i][row] = &plane12[i][row * pw[i]];
+      else
+        outbuf[i][row] = &plane[i][row * pw[i]];
+    }
 
     /* Compute the component dimensions following A.1.1 */
     rw[i] = (dinfo.output_width  * compptr->h_samp_factor +
@@ -145,14 +161,23 @@ int main(int argc, char **argv)
   for (row = 0; row < (int)dinfo.output_height;
        row += dinfo.max_v_samp_factor * DCTSIZE) {
     JSAMPARRAY yuvptr[MAX_COMPONENTS];
+    J12SAMPARRAY yuvptr12[MAX_COMPONENTS];
 
     for (i = 0; i < dinfo.num_components; i++) {
       jpeg_component_info *compptr = &dinfo.comp_info[i];
 
-      yuvptr[i] = &outbuf[i][row * compptr->v_samp_factor /
-                             dinfo.max_v_samp_factor];
+      if (dinfo.data_precision == 12)
+        yuvptr12[i] = &outbuf12[i][row * compptr->v_samp_factor /
+                                   dinfo.max_v_samp_factor];
+      else
+        yuvptr[i] = &outbuf[i][row * compptr->v_samp_factor /
+                               dinfo.max_v_samp_factor];
     }
-    jpeg_read_raw_data(&dinfo, yuvptr, dinfo.max_v_samp_factor * DCTSIZE);
+    if (dinfo.data_precision == 12)
+      jpeg12_read_raw_data(&dinfo, yuvptr12,
+                           dinfo.max_v_samp_factor * DCTSIZE);
+    else
+      jpeg_read_raw_data(&dinfo, yuvptr, dinfo.max_v_samp_factor * DCTSIZE);
   }
   jpeg_finish_decompress(&dinfo);
 
@@ -162,10 +187,18 @@ int main(int argc, char **argv)
      * compare.
      */
     for (y = 0; y < rh[i]; y++) {
-      JSAMPLE *data = plane[i] + pw[i] * y;
-      if (fwrite(data, rw[i], (dinfo.data_precision > 8) ? 2 : 1,
-                 pgxfiles[i]) < 1)
-        THROW(strerror(errno));
+      JSAMPLE *data;
+      J12SAMPLE *data12;
+
+      if (dinfo.data_precision == 12) {
+        data12 = plane12[i] + pw[i] * y;
+        if (fwrite(data12, rw[i], 2, pgxfiles[i]) < 1)
+          THROW(strerror(errno));
+      } else {
+        data = plane[i] + pw[i] * y;
+        if (fwrite(data, rw[i], 1, pgxfiles[i]) < 1)
+          THROW(strerror(errno));
+      }
     }
   }
 
